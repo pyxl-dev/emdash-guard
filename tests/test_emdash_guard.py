@@ -196,6 +196,23 @@ class PluginWiring(HermesHomeTestCase):
         self.assertIn("Argument inconnu", guard._command("bogus"))
 
 
+class HomeResolution(HermesHomeTestCase):
+    """The journal must follow the plugin copy, not the process environment: a multiplexed
+    process serves every profile with the LAUNCH home in its environment."""
+
+    def test_profile_copy_uses_the_home_that_hosts_it(self):
+        pkg = self.home / "plugins" / "emdash-guard"
+        pkg.mkdir(parents=True)
+        for name in ("__init__.py", "dashes.py"):
+            shutil.copy2(ROOT / name, pkg / name)
+        os.environ["HERMES_HOME"] = str(self.home / "somewhere-else")  # launcher home wins for process env
+        loaded = _load("emdash_guard_profile_copy", pkg / "__init__.py", package=True)
+        self.assertEqual(loaded._home().resolve(), self.home.resolve())
+
+    def test_standalone_copy_falls_back_to_hermes_home(self):
+        self.assertEqual(guard._home().resolve(), self.home.resolve())
+
+
 class NotificationDefault(HermesHomeTestCase):
     def test_notification_is_off_unless_opted_in(self):
         with mock.patch.object(guard.subprocess, "Popen") as popen:

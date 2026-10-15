@@ -58,15 +58,25 @@ _ANSI = sys.stderr.isatty()
 
 
 def _home() -> Path:
-    env = os.environ.get("HERMES_HOME")
-    if env:
-        return Path(env).expanduser()
+    """Home du profil qui HEBERGE cette copie du plugin, jamais celui du process.
+
+    Un process multiplexe sert tous les profils avec le home de LANCEMENT dans son
+    environnement : les donnees du plugin doivent donc aller a cote du plugin lui-meme
+    (``<home>/plugins/emdash-guard/``), sans dependre de l'environnement ni du scope
+    courant. La copie hors profil (repo, tests) retombe sur ``get_hermes_home()`` puis
+    sur ``HERMES_HOME``, ce qui garde l'isolation des tests.
+    """
+    plugin_dir = Path(__file__).resolve().parent
+    if plugin_dir.parent.name == "plugins":  # <home>/plugins/<name>/__init__.py
+        return plugin_dir.parent.parent
     try:
         from hermes_constants import get_hermes_home  # type: ignore
 
         return Path(get_hermes_home()).expanduser()
     except Exception:
-        return Path.home() / ".hermes"
+        pass
+    env = os.environ.get("HERMES_HOME")
+    return Path(env).expanduser() if env else Path.home() / ".hermes"
 
 
 def _log_path() -> Path:
@@ -185,6 +195,10 @@ def transform_llm_output(response_text: str = "", session_id: str = "", model: s
             "ts": _now_iso(), "count": count, "platform": platform or "", "session_id": session_id or "",
             "model": model or "", "chars_before": len(response_text), "chars_after": len(fixed),
             "sample": sample,
+            # Diagnostic multi-process : un process multiplexe sert plusieurs profils, donc
+            # savoir QUEL process et QUEL home ont intercepte est la seule facon de deboguer
+            # un journal qui semble manquer une entree.
+            "pid": os.getpid(), "home": str(_home()), "turn_id": str(kwargs.get("turn_id") or ""),
         }
         with _LOCK:
             _STATS["turns"] = int(_STATS.get("turns", 0)) + 1

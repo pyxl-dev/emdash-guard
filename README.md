@@ -101,16 +101,25 @@ echo "word — word" | python3 dashes.py --stdin
 
 ## Known limits
 
-- **Final responses only.** Hook payloads for streaming (`on_stream_delta`,
-  `on_interim_message`) are immutable by design, so commentary emitted *between* two tool
-  calls never passes through the transform. Keep a style rule for that text, or set
-  `display.interim_assistant_messages: false`.
+- **Interim text is out of reach.** Hook payloads for streaming (`on_stream_delta`,
+  `on_interim_message`) are immutable by design, so any text Hermes emits as an *interim*
+  message never passes through the transform. There are two silent paths into that state:
+  1. commentary written between two tool calls (visible when
+     `display.interim_assistant_messages` is on) - keep a style rule for it, or turn that
+     setting off;
+  2. **the answer itself**, reclassified as interim by the verify-on-stop stop gate
+     (`agent/turn_stop_gates.py::_append_interim_answer`, `finish_reason=verification_required`)
+     when a turn edited files without verification evidence. Set `agent.verify_on_stop: false`
+     to remove that path; otherwise a file-editing turn can show its answer untransformed.
 - **Text files only.** Non-UTF-8/binary files are skipped; `dashes.py --fix` never touches
   them.
 - **`config.yaml` shell hooks cannot do this.** The shell-hook response parser only
   understands `block`/`modify`/`context` directives, so a rewrite has to be a Python
   plugin returning a string from `transform_llm_output`.
-- Interceptions are counted per profile, from the process that owns the turn.
+- Interceptions are counted per profile, from the process that owns the turn. One host
+  process can serve many profiles with the launcher's home in its environment, so the
+  journal resolves its home from the plugin's own location and stamps `pid`/`turn_id` on
+  every entry.
 
 ## Tests
 
