@@ -1,0 +1,15 @@
+name: emdash-guard
+label: Em dash guard
+version: "1.0.0"
+author: Yoan Ancely
+kind: standalone
+description: >
+  Suppression deterministe des tirets cadratins (em dash U+2014, en dash U+2013,
+  horizontal bar U+2015). Le hook transform_llm_output reecrit chaque reponse finale
+  de l'assistant avant stockage et livraison (CLI, gateway, desktop) : plage numerique
+  collee, sinon ' - '. Chaque interception est journalisee bruyamment (log JSONL,
+  banniere stderr ; notification macOS sur opt-in avec HERMES_EMDASH_NOTIFY=1) et
+  comptee par la commande /dashes, qui sait aussi nettoyer des fichiers (lecture
+  seule par defaut, --fix sur place).
+provides_hooks:
+  - transform_llm_output
