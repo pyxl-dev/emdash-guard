@@ -13,3 +13,4 @@ description: >
   seule par defaut, --fix sur place).
 provides_hooks:
   - transform_llm_output
+  - on_interim_message
