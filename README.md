@@ -101,6 +101,10 @@ echo "word — word" | python3 dashes.py --stdin
 
 ## Known limits
 
+- **No syntax exemption.** The rewrite is global: fenced code blocks, inline code and YAML front
+  matter are rewritten exactly like prose. That is deliberate (a stray dash in a code comment is
+  still a stray dash), and the one document to keep out of its way is a page whose subject *is*
+  typography, where the rule would rewrite the very character under discussion.
 - **Interim text is out of reach.** Hook payloads for streaming (`on_stream_delta`,
   `on_interim_message`) are immutable by design, so any text Hermes emits as an *interim*
   message never passes through the transform. There are two paths into that state:
