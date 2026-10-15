@@ -45,7 +45,7 @@ class HermesHomeTestCase(unittest.TestCase):
         os.environ["HERMES_HOME"] = str(self.home)
         # The guard module is imported once per process: reset its in-memory counters so
         # every test observes only what it triggered itself.
-        guard._STATS = {"turns": 0, "dashes": 0, "last": None, "since": None}
+        guard._STATS = {"turns": 0, "dashes": 0, "interims": 0, "last": None, "since": None}
         guard._LAST_NOTIFY = float("-inf")
 
     def tearDown(self) -> None:
@@ -163,7 +163,7 @@ class PluginWiring(HermesHomeTestCase):
     def test_register_wires_hook_and_command(self):
         ctx = self._Ctx()
         guard.register(ctx)
-        self.assertEqual(ctx.hooks, ["transform_llm_output"])
+        self.assertEqual(ctx.hooks, ["transform_llm_output", "on_interim_message"])
         self.assertEqual(ctx.commands, ["dashes"])
 
     def test_transform_returns_none_on_clean_text(self):
@@ -194,6 +194,71 @@ class PluginWiring(HermesHomeTestCase):
 
     def test_unknown_argument_is_answered_not_raised(self):
         self.assertIn("Argument inconnu", guard._command("bogus"))
+
+
+class InterimLeak(HermesHomeTestCase):
+    """Interim messages are already delivered: the guard measures them, never rewrites them."""
+
+    def _leak(self, text: str, **extra):
+        payload = {"turn_id": "t-1", "iteration": 2, "session_id": "s", "model": "m",
+                   "provider": "p", "surface": "desktop", "already_streamed": True,
+                   "telemetry_schema_version": 1}
+        payload.update(extra)
+        return guard.on_interim_message(text=text, **payload)
+
+    def _log_entries(self):
+        path = self.home / "logs" / "emdash-guard.log"
+        if not path.exists():
+            return []
+        return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+
+    def test_dirty_interim_is_counted_and_journaled(self):
+        self.assertIsNone(self._leak(f"Je lance les tests {EM_DASH} puis {EN_DASH} je verifie"))
+        self.assertEqual(guard._STATS["interims"], 2)
+        self.assertEqual(guard._STATS["dashes"], 0)  # nothing was corrected
+        self.assertIsNone(guard._STATS["last"])
+        entries = self._log_entries()
+        self.assertEqual(len(entries), 1)
+        entry = entries[0]
+        self.assertIs(entry["leak"], True)
+        self.assertEqual((entry["count"], entry["platform"], entry["turn_id"]), (2, "desktop", "t-1"))
+        self.assertEqual(entry["pid"], os.getpid())
+        self.assertEqual(Path(entry["home"]).resolve(), self.home.resolve())
+        self.assertIn(EM_DASH, entry["sample"])
+        state = json.loads((self.home / "state" / "emdash-guard.json").read_text(encoding="utf-8"))
+        self.assertEqual(state["interims"], 2)
+
+    def test_clean_interim_leaves_no_trace(self):
+        self._leak("Je lance les tests - puis je verifie")
+        self._leak("")
+        self.assertEqual(guard._STATS["interims"], 0)
+        self.assertEqual(self._log_entries(), [])
+
+    def test_counter_survives_a_reload(self):
+        self._leak(f"a {EM_DASH} b")
+        guard._STATS = {"turns": 0, "dashes": 0, "interims": 0, "last": None, "since": None}
+        guard._load_state()
+        self.assertEqual(guard._STATS["interims"], 1)
+
+    def test_status_shows_both_counters_and_explains_the_leak(self):
+        status = guard._command("status")
+        self.assertIn("Passes en intermediaire : 0", status)
+        self.assertNotIn("aucun hook ne peut les corriger", status)
+        guard.transform_llm_output(response_text=f"Final {EM_DASH} corrige")
+        self._leak(f"Interim {EM_DASH} parti")
+        status = guard._command("status")
+        self.assertIn("1 tiret(s) cadratin(s) intercepte(s)", status)
+        self.assertIn("Passes en intermediaire : 1", status)
+        self.assertIn("aucun hook ne peut les corriger", status)
+        self.assertIn("README", status)
+
+    def test_log_command_flags_leaks(self):
+        self._leak(f"Interim {EM_DASH} parti")
+        self.assertIn("intermediaire, non corrige", guard._command("log"))
+
+    def test_observer_never_raises(self):
+        with mock.patch.object(guard, "_append_log", side_effect=RuntimeError("boom")):
+            self.assertIsNone(self._leak(f"a {EM_DASH} b"))
 
 
 class HomeResolution(HermesHomeTestCase):

@@ -10,6 +10,9 @@ de langage. Ce plugin le retire de la source, sans inference supplementaire :
   et signale par une notification macOS (au plus une par minute).
 * ``/dashes`` affiche le compteur et permet de nettoyer des fichiers
   (``/dashes fix <chemin>...``). Meme logique en CLI : ``dashes.py [--fix] PATH...``.
+* ``on_interim_message`` (observateur Hermes) constate les cadratins partis dans un
+  message intermediaire, hors de portee de toute reecriture : compteur ``interims``
+  et ligne ``"leak": true`` dans le journal, sans rien modifier.
 
 Aucune dependance : stdlib uniquement, logique pure dans ``dashes.py``.
 """
@@ -50,7 +53,7 @@ _ENV_NOTIFY = "HERMES_EMDASH_NOTIFY"
 _ENV_ANNOUNCE = "HERMES_EMDASH_ANNOUNCE"  # "1" -> marqueur visible en fin de reponse
 
 _LOCK = threading.Lock()
-_STATS: Dict[str, Any] = {"turns": 0, "dashes": 0, "last": None, "since": None}
+_STATS: Dict[str, Any] = {"turns": 0, "dashes": 0, "interims": 0, "last": None, "since": None}
 # Sentinelle -inf : un monotonic() qui repart de zero (process frais) ne doit pas
 # declencher le throttle sur la toute premiere interception.
 _LAST_NOTIFY = float("-inf")
@@ -108,7 +111,7 @@ def _load_state() -> None:
     except Exception:
         return
     if isinstance(raw, dict):
-        for key in ("turns", "dashes"):
+        for key in ("turns", "dashes", "interims"):
             value = raw.get(key)
             if isinstance(value, int):
                 _STATS[key] = value
@@ -216,9 +219,46 @@ def transform_llm_output(response_text: str = "", session_id: str = "", model: s
         return None
 
 
+def on_interim_message(text: str = "", session_id: str = "", model: str = "", surface: str = "",
+                       turn_id: str = "", already_streamed: bool = False, **kwargs: Any) -> None:
+    """Observateur Hermes : constate un cadratin dans un message intermediaire.
+
+    Le texte est deja livre (payload immuable) : aucune reecriture possible, on mesure
+    seulement le trou. Compteur ``interims`` separe de ``dashes`` (qui reste celui des
+    corrections reelles), pas de ``last`` ni de banniere : ce n'est pas une interception.
+    """
+    try:
+        if not isinstance(text, str) or not text:
+            return
+        _, count = fix_dashes(text)
+        if not count:
+            return
+        entry = {
+            "ts": _now_iso(), "leak": True, "count": count, "platform": surface or "",
+            "session_id": session_id or "", "model": model or "", "already_streamed": bool(already_streamed),
+            "sample": _sample(text),
+            "pid": os.getpid(), "home": str(_home()), "turn_id": str(turn_id or ""),
+        }
+        with _LOCK:
+            _STATS["interims"] = int(_STATS.get("interims", 0)) + count
+            _STATS["since"] = _STATS.get("since") or entry["ts"]
+            _append_log(entry)
+            _persist_state()
+        logger.warning("emdash-guard: %d tiret(s) cadratin(s) passe(s) en intermediaire (non corrigeable) : %s",
+                       count, entry["sample"])
+    except Exception:  # observateur : ne jamais remonter dans le flux
+        logger.debug("emdash-guard: interim observer failed", exc_info=True)
+
+
 def _status() -> str:
     line = (f"emdash-guard : {_STATS.get('dashes', 0)} tiret(s) cadratin(s) intercepte(s) "
             f"sur {_STATS.get('turns', 0)} reponse(s).")
+    interims = int(_STATS.get("interims", 0) or 0)
+    line += f"\nPasses en intermediaire : {interims} tiret(s) cadratin(s)."
+    if interims:
+        line += ("\n  Ces cadratins sont partis dans un message intermediaire (texte entre outils ou "
+                 "reponse reclassee par verify-on-stop) : aucun hook ne peut les corriger. "
+                 "Voir README, section Known limits.")
     last = _STATS.get("last")
     if isinstance(last, dict):
         line += (f"\nDernier : {last.get('ts', '?')} ({last.get('count', '?')} fois, "
@@ -241,7 +281,8 @@ def _tail_log(count: int = 10) -> str:
     if not recent:
         return "emdash-guard : journal vide."
     return "Dernieres interceptions :\n" + "\n".join(
-        f"  {e.get('ts', '?')} - {e.get('count', '?')} fois - {e.get('sample', '')}"
+        f"  {e.get('ts', '?')} - {e.get('count', '?')} fois{' (intermediaire, non corrige)' if e.get('leak') else ''}"
+        f" - {e.get('sample', '')}"
         for e in (json.loads(line) for line in recent)
     )
 
@@ -283,9 +324,10 @@ def _command(raw_args: str) -> str:
 def register(ctx) -> None:
     _load_state()
     ctx.register_hook("transform_llm_output", transform_llm_output)
+    ctx.register_hook("on_interim_message", on_interim_message)
     ctx.register_command(
         "dashes", _command,
         description="Tirets cadratins : compteur emdash-guard, journal, nettoyage de fichiers.",
         args_hint="[status|log [n]|fix <chemin>...]",
     )
-    logger.info("emdash-guard active (hook transform_llm_output + commande /dashes)")
+    logger.info("emdash-guard active (hooks transform_llm_output + on_interim_message, commande /dashes)")

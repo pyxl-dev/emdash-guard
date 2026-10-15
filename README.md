@@ -78,7 +78,7 @@ invariant).
 Inside a Hermes session:
 
 ```
-/dashes                  counter, last interception, log path, notification state
+/dashes                  counters (corrected + interim leaks), last interception, log path
 /dashes log 20           last 20 interceptions
 /dashes fix <path>...    scan and rewrite files (directories are walked recursively)
 /dashes check <path>...  read-only scan
@@ -103,7 +103,7 @@ echo "word — word" | python3 dashes.py --stdin
 
 - **Interim text is out of reach.** Hook payloads for streaming (`on_stream_delta`,
   `on_interim_message`) are immutable by design, so any text Hermes emits as an *interim*
-  message never passes through the transform. There are two silent paths into that state:
+  message never passes through the transform. There are two paths into that state:
   1. commentary written between two tool calls (visible when
      `display.interim_assistant_messages` is on) - keep a style rule for it, or turn that
      setting off;
@@ -111,6 +111,15 @@ echo "word — word" | python3 dashes.py --stdin
      (`agent/turn_stop_gates.py::_append_interim_answer`, `finish_reason=verification_required`)
      when a turn edited files without verification evidence. Set `agent.verify_on_stop: false`
      to remove that path; otherwise a file-editing turn can show its answer untransformed.
+
+  This hole is **measured, not fixed**. The plugin subscribes to the `on_interim_message`
+  observer: every interim message that carries a dash adds to a separate `interims`
+  counter (the `dashes` counter only counts real corrections) and writes one line with
+  `"leak": true` to `$HERMES_HOME/logs/emdash-guard.log`, with the original `sample` and
+  the usual `pid`/`home`/`turn_id` diagnostics. `/dashes` shows both counters and
+  `/dashes log` tags those lines as interim. Nothing is rewritten: the text has already
+  reached the user, so a non-zero `interims` count means dashes were shown, and the only
+  levers are the two settings above.
 - **Text files only.** Non-UTF-8/binary files are skipped; `dashes.py --fix` never touches
   them.
 - **`config.yaml` shell hooks cannot do this.** The shell-hook response parser only
@@ -129,7 +138,8 @@ python3 -m unittest discover -s tests -v
 
 Covers the rewrite rules, idempotence, numeric ranges, byte-identical handling of clean
 and binary files, the CLI contract (`--check` exit code, `--stdin`), hook registration,
-and the notification default (off unless explicitly opted in).
+the interim leak counter and journal, and the notification default (off unless
+explicitly opted in).
 
 ## License
 
